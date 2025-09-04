@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"gcli2api/internal/utils"
 	"github.com/sirupsen/logrus"
 	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 )
@@ -161,7 +162,7 @@ func (c Config) Validate(cfgPath string) error {
 			if p == "" {
 				continue
 			}
-			xp, err := expandUser(p)
+			xp, err := utils.ExpandUser(p)
 			if err != nil {
 				return fmt.Errorf("expand creds path %q: %w", p, err)
 			}
@@ -169,7 +170,7 @@ func (c Config) Validate(cfgPath string) error {
 		}
 		// Validate each projectIds key
 		for k := range c.ProjectIds {
-			xp, err := expandUser(k)
+			xp, err := utils.ExpandUser(k)
 			if err != nil {
 				return fmt.Errorf("expand projectIds key %q: %w", k, err)
 			}
@@ -179,19 +180,4 @@ func (c Config) Validate(cfgPath string) error {
 		}
 	}
 	return nil
-}
-
-// expandUser mirrors internal/utils.ExpandUser without importing utils to avoid cycles.
-func expandUser(path string) (string, error) {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if path == "~" {
-			return home, nil
-		}
-		return home + string(os.PathSeparator) + strings.TrimPrefix(path, "~/"), nil
-	}
-	return path, nil
 }

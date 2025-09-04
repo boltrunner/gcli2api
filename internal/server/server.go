@@ -88,65 +88,6 @@ func (s *Server) Router() http.Handler {
 	return s.withRecover(s.withLogging(s.withConcurrencyLimit(mux)))
 }
 
-// responseWriter wraps http.ResponseWriter to capture status code
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// Flush implements http.Flusher by forwarding to the underlying ResponseWriter
-func (rw *responseWriter) Flush() {
-	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func (s *Server) withLogging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		wrapped := &responseWriter{
-			ResponseWriter: w,
-			statusCode:     200, // default status code
-		}
-		next.ServeHTTP(wrapped, r)
-		dur := time.Since(start)
-		logrus.Infof("%s %s %d %s", r.Method, r.URL.Path, wrapped.statusCode, dur)
-	})
-}
-
-// withRecover adds a panic recovery layer to prevent leaking stack traces
-// and to ensure a clean 500 response is sent to the client.
-func (s *Server) withRecover(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				// Minimal error details; avoid stack traces or sensitive info
-				logrus.WithField("path", r.URL.Path).Errorf("panic recovered: %v", rec)
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
-// withConcurrencyLimit adds simple server-wide concurrency limiting.
-func (s *Server) withConcurrencyLimit(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case s.sem <- struct{}{}:
-			defer func() { <-s.sem }()
-			next.ServeHTTP(w, r)
-		default:
-			http.Error(w, "too many concurrent requests", http.StatusTooManyRequests)
-		}
-	})
-}
-
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -212,12 +153,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) validateModel(model string) bool {
-	switch model {
-	case "gemini-2.5-flash", "gemini-2.5-pro":
-		return true
-	default:
-		return false
-	}
+	return gemini.IsSupportedModel(model)
 }
 
 func (s *Server) decodeGeminiRequest(r *http.Request) (gemini.GeminiRequest, error) {
@@ -400,22 +336,17 @@ func listModels() interface{} {
 		Description                string   `json:"description"`
 		SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 	}
-	return map[string]interface{}{
-		"models": []model{
-			{
-				Name:                       "models/gemini-2.5-flash",
-				Version:                    "001",
-				DisplayName:                "Gemini 2.5 Flash",
-				Description:                "Fast multimodal generation",
-				SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
-			},
-			{
-				Name:                       "models/gemini-2.5-pro",
-				Version:                    "001",
-				DisplayName:                "Gemini 2.5 Pro",
-				Description:                "Accurate multimodal generation",
-				SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
-			},
-		},
+	out := struct {
+		Models []model `json:"models"`
+	}{Models: make([]model, 0, len(gemini.SupportedModels))}
+	for _, m := range gemini.SupportedModels {
+		out.Models = append(out.Models, model{
+			Name:                       "models/" + m.Name,
+			Version:                    "001",
+			DisplayName:                m.DisplayName,
+			Description:                m.Description,
+			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+		})
 	}
+	return out
 }

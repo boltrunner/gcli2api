@@ -1,8 +1,6 @@
 package gemini
 
 import (
-	"errors"
-	"io"
 	"strings"
 )
 
@@ -17,9 +15,3 @@ func NormalizeGeminiRequest(req GeminiRequest) GeminiRequest {
 }
 
 // System prompt injection removed.
-
-// DecodeJSON is a small helper for consistent decoding with size guard.
-func DecodeJSON(r io.Reader, dst interface{}) error {
-	// For simplicity we rely on json decoder in handlers directly.
-	return errors.New("not implemented")
-}
