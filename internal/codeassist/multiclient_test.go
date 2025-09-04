@@ -3,6 +3,7 @@ package codeassist
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -21,7 +22,7 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
 		{Path: "b.json", Raw: auth.RawToken{AccessToken: "xb", RefreshToken: "rb"}, Persist: false},
 	}
-	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, nil)
+	mc, err := NewMultiClient(oauthCfg, sources, 1, 1*time.Millisecond, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("init multiclient: %v", err)
 	}
@@ -51,8 +52,8 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 		}
 	})
 
-	// Subtest: does not rotate on 500; returns immediately
-	t.Run("no rotate on 500", func(t *testing.T) {
+	// Subtest: rotates on 500 to next credential and succeeds
+	t.Run("rotate on 500", func(t *testing.T) {
 		// Reset round-robin so we start from idx=0
 		atomic.StoreUint64(&mc.rr, 0)
 		attempts := []int{0, 0}
@@ -62,16 +63,18 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 		})), 0, 1*time.Millisecond)
 		mc.entries[1].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 			attempts[1]++
-			// Would succeed if tried, but should not be invoked
 			return resp(200, `{"response": {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}`, "application/json"), nil
 		})), 0, 1*time.Millisecond)
 
-		_, err := mc.GenerateContent(context.Background(), "gemini-2.5-flash", "proj", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "hi"}}}}})
-		if err == nil {
-			t.Fatalf("expected error on 500")
+		g, err := mc.GenerateContent(context.Background(), "gemini-2.5-flash", "proj", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "hi"}}}}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if attempts[0] != 1 || attempts[1] != 0 {
-			t.Fatalf("expected attempts [1,0], got %v", attempts)
+		if len(g.Candidates) == 0 || len(g.Candidates[0].Content.Parts) == 0 || g.Candidates[0].Content.Parts[0].Text != "ok" {
+			t.Fatalf("bad response: %+v", g)
+		}
+		if attempts[0] != 1 || attempts[1] != 1 {
+			t.Fatalf("expected attempts [1,1], got %v", attempts)
 		}
 	})
 }
@@ -85,7 +88,7 @@ func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
 	projectMap := map[string][]string{
 		"a.json": {"p1", "p2"},
 	}
-	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, projectMap)
+	mc, err := NewMultiClient(oauthCfg, sources, 1, 1*time.Millisecond, nil, nil, projectMap)
 	if err != nil {
 		t.Fatalf("init multiclient: %v", err)
 	}
@@ -197,5 +200,112 @@ func TestMultiClient_EmptyProjectList_FallsBackToDiscovery(t *testing.T) {
 	}
 	if len(mc.entries) != 1 {
 		t.Fatalf("expected 1 entry (discovery fallback), got %d", len(mc.entries))
+	}
+}
+
+// Helper ReadCloser that fails immediately with a desired error
+type failingBody struct{ err error }
+
+func (f *failingBody) Read(p []byte) (int, error) { return 0, f.err }
+func (f *failingBody) Close() error               { return nil }
+
+// Helper ReadCloser that yields one event then fails
+type oneEventThenFail struct {
+	yielded bool
+	err     error
+}
+
+func (o *oneEventThenFail) Read(p []byte) (int, error) {
+	if !o.yielded {
+		o.yielded = true
+		s := "data: {\"response\": {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"first\"}]}}]}}\n\n"
+		copy(p, []byte(s))
+		return len(s), nil
+	}
+	return 0, o.err
+}
+func (o *oneEventThenFail) Close() error { return nil }
+
+func TestMultiClient_StreamRotation_BeforeFirstEvent(t *testing.T) {
+	oauthCfg := oauth2.Config{ClientID: "test", ClientSecret: "s", Scopes: []string{"s"}, Endpoint: google.Endpoint}
+	sources := []CredSource{
+		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
+		{Path: "b.json", Raw: auth.RawToken{AccessToken: "xb", RefreshToken: "rb"}, Persist: false},
+	}
+	mc, err := NewMultiClient(oauthCfg, sources, 1, 1*time.Millisecond, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("init multiclient: %v", err)
+	}
+	// entry[0]: immediate timeout error before any event
+	mc.entries[0].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: &failingBody{err: io.ErrUnexpectedEOF}, Header: http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
+	})), 0, 1*time.Millisecond)
+	// entry[1]: successful SSE
+	sseBody := "data: {\"response\": {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok1\"}]}}]}}\n\n" +
+		"data: {\"response\": {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok2\"}]}}]}}\n\n"
+	mc.entries[1].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		return resp(200, sseBody, "text/event-stream"), nil
+	})), 0, 1*time.Millisecond)
+
+	out, errs := mc.GenerateContentStream(context.Background(), "gemini-2.5-flash", "proj", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "x"}}}}})
+	var parts []string
+	for g := range out {
+		if len(g.Candidates) > 0 && len(g.Candidates[0].Content.Parts) > 0 {
+			parts = append(parts, g.Candidates[0].Content.Parts[0].Text)
+		}
+	}
+	if err := <-errs; err != nil && err != io.EOF {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(parts) != 2 || parts[0] != "ok1" || parts[1] != "ok2" {
+		t.Fatalf("bad parts: %+v", parts)
+	}
+}
+
+func TestMultiClient_Stream_NoRotation_AfterFirstEvent(t *testing.T) {
+	oauthCfg := oauth2.Config{ClientID: "test", ClientSecret: "s", Scopes: []string{"s"}, Endpoint: google.Endpoint}
+	sources := []CredSource{
+		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
+		{Path: "b.json", Raw: auth.RawToken{AccessToken: "xb", RefreshToken: "rb"}, Persist: false},
+	}
+	mc, err := NewMultiClient(oauthCfg, sources, 1, 1*time.Millisecond, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("init multiclient: %v", err)
+	}
+	// entry[0]: send one event then fail
+	mc.entries[0].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: &oneEventThenFail{err: io.ErrUnexpectedEOF}, Header: http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
+	})), 0, 1*time.Millisecond)
+	// entry[1]: would succeed if rotated, but should not be used
+	sseBody := "data: {\"response\": {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"later\"}]}}]}}\n\n"
+	mc.entries[1].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		return resp(200, sseBody, "text/event-stream"), nil
+	})), 0, 1*time.Millisecond)
+
+	out, errs := mc.GenerateContentStream(context.Background(), "gemini-2.5-flash", "proj", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "x"}}}}})
+	// Expect to receive exactly one event then error; no rotation
+	var got []string
+	var streamErr error
+	done := false
+	for !done {
+		select {
+		case g, ok := <-out:
+			if !ok {
+				done = true
+				break
+			}
+			if len(g.Candidates) > 0 && len(g.Candidates[0].Content.Parts) > 0 {
+				got = append(got, g.Candidates[0].Content.Parts[0].Text)
+			}
+		case e := <-errs:
+			streamErr = e
+			done = true
+		}
+	}
+	if len(got) != 1 || got[0] != "first" {
+		t.Fatalf("expected one first event, got %+v", got)
+	}
+	if streamErr == nil {
+		t.Fatalf("expected error after first event")
 	}
 }

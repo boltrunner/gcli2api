@@ -74,7 +74,7 @@ go build -o gcli2api .
   - `GET /v1beta/models`: 模型列表 (内置 `gemini-2.5-flash`, `gemini-2.5-pro`)
   - `POST /v1beta/models/<model>:generateContent`: 非流式生成
   - `POST /v1beta/models/<model>:streamGenerateContent`: SSE 流式生成
-- **请求轮询与重试**: 支持多凭据轮询，以及针对 `401/429/5xx` 错误的指数退避重试。
+- **请求轮询与重试**: 支持多凭据/项目单元轮询；`requestMaxRetries` 用于在不同单元间旋转重试（总尝试次数 = 1 + 重试次数）。针对 `401/403/429/5xx` 和常见网络错误发生时进行旋转重试；旋转为“立即切换”，不做指数退避。流式请求仅在首个事件发送前允许旋转，首个事件后不再切换。
 - **状态缓存**: 自动将 GCP Project ID 缓存至 SQLite 数据库 (默认为 `./data/state.db`)。
 - **API Key 认证**: 可设置 `authKey`，要求客户端在请求时提供 `Authorization: Bearer <key>` 或 `x-goog-api-key: <key>`。
 
@@ -91,7 +91,7 @@ go build -o gcli2api .
 - `authKey`（可选，若为占位符 `UNSAFE-KEY-REPLACE` 则校验失败）
 - `geminiOauthCredsFiles`：凭据文件路径数组（必填）
 - `projectIds`：可选。以“凭据文件路径”为键、以“Project ID 数组”为值的映射。键会进行 `~` 展开（不解析符号链接），并且必须与 `geminiOauthCredsFiles` 中的某一项完全匹配；否则 `check` 会失败。若某个键对应的数组为空，则视为未配置、回退到自动发现。若数组中包含特殊标记 `"_auto"`，表示除显式列出的项目外，还应加入一个“自动发现”的项目单元。
-- `requestMaxRetries`（默认 `3`）
+- `requestMaxRetries`（默认 `3`）：跨单元重试预算（总尝试次数 = 1 + 重试次数）。
 - `requestBaseDelay`（毫秒，默认 `1000`）
 - `sqlitePath`（默认 `./data/state.db`）
 
@@ -130,7 +130,7 @@ go build -o gcli2api .
   - 若某个凭据的 `projectIds` 数组包含特殊标记 `"_auto"`，则额外加入一个“自动发现的 Project ID” 轮询单元；若未包含该标记，则仅使用显式列出的项目。
 - 校验：`gcli2api check -c ./config.json` 会在以下情况下失败：
   - `projectIds` 中存在经 `~` 展开后无法与 `geminiOauthCredsFiles` 精确匹配的键。
-- 重试/轮换策略保持不变：遇到 `401/429` 时在轮询单元间切换；其它错误不触发轮换。
+- 重试/轮换策略：遇到 `401/403/429/5xx`、项目发现失败或常见网络错误时在单元间旋转；单凭据部署下将对同一单元重试。流式场景仅在首个事件之前允许旋转，之后不再切换。
 
 示例:
 ```json

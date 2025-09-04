@@ -38,12 +38,15 @@ type CodeAssistEnvelope struct {
 type CaClient struct {
 	httpClient *http.Client
 	baseURL    string
-	retries    int
-	baseDelay  time.Duration
+	// transportRetries are used only for lightweight JSON helper calls
+	// such as discovery/onboarding. Generation endpoints do not use
+	// per-unit HTTP retries; MultiClient orchestrates retries across units.
+	transportRetries int
+	baseDelay        time.Duration
 }
 
-func NewCaClient(httpClient *http.Client, retries int, baseDelay time.Duration) *CaClient {
-	return &CaClient{httpClient: httpClient, baseURL: BaseURL, retries: retries, baseDelay: baseDelay}
+func NewCaClient(httpClient *http.Client, transportRetries int, baseDelay time.Duration) *CaClient {
+	return &CaClient{httpClient: httpClient, baseURL: BaseURL, transportRetries: transportRetries, baseDelay: baseDelay}
 }
 
 func (c *CaClient) GenerateContent(ctx context.Context, model, project string, req gemini.GeminiRequest) (*gemini.GeminiAPIResponse, error) {
@@ -54,51 +57,33 @@ func (c *CaClient) GenerateContent(ctx context.Context, model, project string, r
 	if err != nil {
 		return nil, err
 	}
-	var out *gemini.GeminiAPIResponse
-	var lastErr error
-	err = httpx.WithRetries(ctx, c.retries, c.baseDelay, func(attempt int) error {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
-		if err != nil {
-			return err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("User-Agent", config.UserAgent)
-
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			lastErr = err
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			// Envelope
-			var env CodeAssistEnvelope
-			dec := json.NewDecoder(resp.Body)
-			if err := dec.Decode(&env); err != nil {
-				lastErr = err
-				return err
-			}
-			if env.Response == nil {
-				lastErr = fmt.Errorf("empty response envelope")
-				return lastErr
-			}
-			out = env.Response
-			return nil
-		}
-		// Non-2xx
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		lastErr = fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
-		// Retry policy on 401/429/5xx
-		if resp.StatusCode == 401 || resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode <= 599) {
-			return lastErr
-		}
-		// Don't retry other 4xx
-		return nil
-	})
-	if err != nil && out == nil {
-		return nil, lastErr
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", config.UserAgent)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// Envelope
+		var env CodeAssistEnvelope
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(&env); err != nil {
+			return nil, err
+		}
+		if env.Response == nil {
+			return nil, fmt.Errorf("empty response envelope")
+		}
+		return env.Response, nil
+	}
+	// Non-2xx
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return nil, fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
 }
 
 // StreamClient returns a channel of responses and an error channel.
@@ -115,56 +100,46 @@ func (c *CaClient) GenerateContentStream(ctx context.Context, model, project str
 			errs <- err
 			return
 		}
-		var lastErr error
-		err = httpx.WithRetries(ctx, c.retries, c.baseDelay, func(attempt int) error {
-			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
-			if err != nil {
-				lastErr = err
-				return err
-			}
-			httpReq.Header.Set("Content-Type", "application/json")
-			httpReq.Header.Set("Accept", "text/event-stream")
-			httpReq.Header.Set("User-Agent", config.UserAgent)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
+		if err != nil {
+			errs <- err
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("User-Agent", config.UserAgent)
 
-			resp, err := c.httpClient.Do(httpReq)
-			if err != nil {
-				lastErr = err
-				return err
-			}
-			defer resp.Body.Close()
-			// logrus.Infof("response received, status = %d", resp.StatusCode)
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-				lastErr = fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
-				logrus.Warnf("error response: %v", lastErr)
-				if resp.StatusCode == 401 || resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode <= 599) {
-					return lastErr
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer resp.Body.Close()
+		// logrus.Infof("response received, status = %d", resp.StatusCode)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			err := fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
+			logrus.Warnf("error response: %v", err)
+			errs <- err
+			return
+		}
+		// Use manual SSE parsing similar to internal/sse if needed; upstream returns SSE with data: envelopes.
+		// Here, mimic with a small scanner over lines.
+		// Simpler: reuse sse.Parse by wrapping response
+		type envelope = CodeAssistEnvelope
+		readErr := parseSSEStream(ctx, resp.Body, func(env *envelope) error {
+			if env != nil && env.Response != nil {
+				select {
+				case out <- *env.Response:
+				case <-ctx.Done():
+					return ctx.Err()
 				}
-				// Non-retryable
-				return nil
-			}
-			// Use manual SSE parsing similar to internal/sse if needed; upstream returns SSE with data: envelopes.
-			// Here, mimic with a small scanner over lines.
-			// Simpler: reuse sse.Parse by wrapping response
-			type envelope = CodeAssistEnvelope
-			readErr := parseSSEStream(ctx, resp.Body, func(env *envelope) error {
-				if env != nil && env.Response != nil {
-					select {
-					case out <- *env.Response:
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}
-				return nil
-			})
-			if readErr != nil && readErr != io.EOF {
-				lastErr = readErr
-				return readErr
 			}
 			return nil
 		})
-		if err != nil && lastErr != nil {
-			errs <- lastErr
+		if readErr != nil && readErr != io.EOF {
+			errs <- readErr
+			return
 		}
 	}()
 	return out, errs
@@ -362,7 +337,7 @@ func (c *CaClient) doJSON(ctx context.Context, method string, body any, out any,
 		return err
 	}
 	var lastErr error
-	return httpx.WithRetries(ctx, c.retries, c.baseDelay, func(attempt int) error {
+	return httpx.WithRetries(ctx, c.transportRetries, c.baseDelay, func(attempt int) error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
 		if err != nil {
 			lastErr = err
