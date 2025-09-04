@@ -184,13 +184,15 @@ func (mc *MultiClient) GenerateContent(ctx context.Context, model, project strin
 
 func (mc *MultiClient) GenerateContentStream(ctx context.Context, model, project string, req gemini.GeminiRequest) (<-chan gemini.GeminiAPIResponse, <-chan error) {
 	out := make(chan gemini.GeminiAPIResponse, 16)
-	errs := make(chan error, 1)
+	// Unbuffered error channel ensures consumers observe error before out closes
+	errs := make(chan error)
 	go func() {
-		defer close(out)
-		defer close(errs)
 		n := len(mc.entries)
 		if n == 0 {
+			// Close out first so receivers break their loops, then send error
+			close(out)
 			errs <- fmt.Errorf("no credentials configured")
+			close(errs)
 			return
 		}
 		start := mc.pickStart()
@@ -219,17 +221,28 @@ func (mc *MultiClient) GenerateContentStream(ctx context.Context, model, project
 				select {
 				case g, ok := <-upOut:
 					if !ok {
-						// Try to capture any pending error before returning
+						// Upstream output closed. If an error is pending, forward it;
+						// otherwise, finish gracefully.
 						if upErrs != nil {
 							select {
-							case e, ok2 := <-upErrs:
-								if ok2 && e != nil {
-									errs <- e
+							case e2, ok2 := <-upErrs:
+								if ok2 && e2 != nil {
+									// Deliver error first so consumer sees it before out closes
+									errs <- e2
+									close(out)
+									close(errs)
+									return
 								}
-							default:
-								// no pending error
+							case <-ctx.Done():
+								errs <- ctx.Err()
+								close(out)
+								close(errs)
+								return
 							}
 						}
+						// No error pending; close cleanly
+						close(out)
+						close(errs)
 						return
 					}
 					sentAny = true
@@ -249,20 +262,33 @@ func (mc *MultiClient) GenerateContentStream(ctx context.Context, model, project
 							goto nextAttempt
 						}
 						// either after first event or not retryable/budget exhausted
+						// Deliver error first so consumer sees it before out closes
 						errs <- err
+						close(out)
+						close(errs)
 						return
 					}
 				case <-ctx.Done():
 					errs <- ctx.Err()
+					close(out)
+					close(errs)
 					return
 				}
 			}
 		nextAttempt:
 			continue
 		}
+		// All attempts exhausted or only discovery failures
 		if lastErr != nil {
+			// Close out first so receivers break their loops, then deliver the error
+			close(out)
 			errs <- lastErr
+			close(errs)
+			return
 		}
+		// Otherwise clean completion without error
+		close(out)
+		close(errs)
 	}()
 	return out, errs
 }
