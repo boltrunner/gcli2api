@@ -13,6 +13,10 @@ import (
 	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 )
 
+// UserAgent is the HTTP User-Agent used for upstream requests.
+// It can be overridden at runtime (e.g., from config).
+var UserAgent = "google-api-nodejs-client/9.15.1"
+
 type Config struct {
 	Host                 string   `json:"host"`
 	ServerPort           int      `json:"port"`
@@ -96,6 +100,7 @@ func LoadConfig(path string) (Config, error) {
 	// Log user agent if provided
 	if strings.TrimSpace(cfg.UserAgent) != "" {
 		logrus.Infof("using user agent: %s", cfg.UserAgent)
+		UserAgent = cfg.UserAgent
 	}
 	// Defaults
 	if cfg.Host == "" {

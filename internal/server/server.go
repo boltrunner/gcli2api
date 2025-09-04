@@ -56,7 +56,7 @@ func New(cfg config.Config, httpCli *http.Client) *Server {
 	return &Server{
 		cfg:      cfg,
 		httpCli:  httpCli,
-		caClient: codeassist.NewClient(httpCli, cfg.RequestMaxRetries, time.Duration(cfg.RequestBaseDelayMillis)*time.Millisecond),
+		caClient: codeassist.NewCaClient(httpCli, cfg.RequestMaxRetries, time.Duration(cfg.RequestBaseDelayMillis)*time.Millisecond),
 		sem:      make(chan struct{}, cfg.MaxConcurrentRequests),
 	}
 }

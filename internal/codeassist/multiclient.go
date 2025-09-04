@@ -37,17 +37,17 @@ type MultiClient struct {
 	clientID string
 
 	// factory for unit tests
-	mkClient  func(httpCli *http.Client, retries int, baseDelay time.Duration) *Client
-	retries   int
-	baseDelay time.Duration
-	proxyURL  *url.URL
+	mkCaClient func(httpCli *http.Client, retries int, baseDelay time.Duration) *CaClient
+	retries    int
+	baseDelay  time.Duration
+	proxyURL   *url.URL
 }
 
 type entry struct {
 	idx       int
 	path      string
 	tokenKey  string
-	ca        *Client
+	ca        *CaClient
 	projectID atomic.Value // string
 }
 
@@ -58,8 +58,8 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 		store:    st,
 		provider: "gemini-cli-oauth",
 		clientID: oauthCfg.ClientID,
-		mkClient: func(httpCli *http.Client, retries int, baseDelay time.Duration) *Client {
-			return NewClient(httpCli, retries, baseDelay)
+		mkCaClient: func(httpCli *http.Client, retries int, baseDelay time.Duration) *CaClient {
+			return NewCaClient(httpCli, retries, baseDelay)
 		},
 		retries:   retries,
 		baseDelay: baseDelay,
@@ -71,7 +71,7 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 		baseTS := oauthCfg.TokenSource(context.Background(), src.Raw.ToOAuth2Token())
 		ts := auth.NewPersistingTokenSource(baseTS, src.Raw, src.Path, src.Persist)
 		httpCli := httpx.NewOAuthHTTPClient(ts, proxyURL)
-		ca := mc.mkClient(httpCli, retries, baseDelay)
+		ca := mc.mkCaClient(httpCli, retries, baseDelay)
 		identity := src.Raw.RefreshToken
 		tokenKey := state.ComputeTokenKey(mc.provider, mc.clientID, identity)
 		if units, ok := projectMap[src.Path]; ok {

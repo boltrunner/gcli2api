@@ -30,11 +30,11 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 	t.Run("rotate on 401", func(t *testing.T) {
 		// entry[0] returns 401; entry[1] returns 200
 		attempts := []int{0, 0}
-		mc.entries[0].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		mc.entries[0].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 			attempts[0]++
 			return resp(401, "unauthorized", "text/plain"), nil
 		})), 0, 1*time.Millisecond)
-		mc.entries[1].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		mc.entries[1].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 			attempts[1]++
 			return resp(200, `{"response": {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}`, "application/json"), nil
 		})), 0, 1*time.Millisecond)
@@ -56,11 +56,11 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 		// Reset round-robin so we start from idx=0
 		atomic.StoreUint64(&mc.rr, 0)
 		attempts := []int{0, 0}
-		mc.entries[0].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		mc.entries[0].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 			attempts[0]++
 			return resp(500, "boom", "text/plain"), nil
 		})), 0, 1*time.Millisecond)
-		mc.entries[1].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		mc.entries[1].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 			attempts[1]++
 			// Would succeed if tried, but should not be invoked
 			return resp(200, `{"response": {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}`, "application/json"), nil
@@ -95,7 +95,7 @@ func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
 
 	// entry[0] should send project p1 and return 401; entry[1] should send p2 and return 200
 	attempts := []int{0, 0}
-	mc.entries[0].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+	mc.entries[0].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 		attempts[0]++
 		var body CodeAssistRequest
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -104,7 +104,7 @@ func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
 		}
 		return resp(401, "unauthorized", "text/plain"), nil
 	})), 0, 1*time.Millisecond)
-	mc.entries[1].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+	mc.entries[1].ca = NewCaClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
 		attempts[1]++
 		var body CodeAssistRequest
 		_ = json.NewDecoder(r.Body).Decode(&body)

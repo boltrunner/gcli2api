@@ -35,7 +35,7 @@ func TestClient_RetryPolicy_Unary(t *testing.T) {
 		}
 		return resp(200, `{"response": {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}`, "application/json"), nil
 	})
-	c := NewClient(mkClient(rt), 3, 1*time.Millisecond)
+	c := NewCaClient(mkClient(rt), 3, 1*time.Millisecond)
 	g, err := c.GenerateContent(context.Background(), "gemini-2.5-flash", "proj", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "hi"}}}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -59,7 +59,7 @@ func TestStream_401RefreshResume(t *testing.T) {
 		}
 		return resp(200, sseBody, "text/event-stream"), nil
 	})
-	c := NewClient(mkClient(rt), 2, 1*time.Millisecond)
+	c := NewCaClient(mkClient(rt), 2, 1*time.Millisecond)
 	out, errs := c.GenerateContentStream(context.Background(), "gemini-2.5-flash", "proj", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "x"}}}}})
 	var parts []string
 	for g := range out {

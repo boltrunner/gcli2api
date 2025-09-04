@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"gcli2api/internal/auth"
@@ -71,11 +70,6 @@ func main() {
 			}
 			if err := cfg.Validate(cfgPath); err != nil {
 				return err
-			}
-
-			// Apply optional user agent override for upstream requests
-			if ua := strings.TrimSpace(cfg.UserAgent); ua != "" {
-				codeassist.UserAgent = ua
 			}
 
 			// Parse optional proxy and kick off async TCP liveness check

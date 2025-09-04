@@ -13,20 +13,17 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"gcli2api/internal/config"
 	"gcli2api/internal/gemini"
 	"gcli2api/internal/httpx"
 	// "gcli2api/internal/utils"
 )
 
 const (
-	BaseURL  = "https://cloudcode-pa.googleapis.com"
-	APIVer   = "v1internal"
-	NodeJsUA = "google-api-nodejs-client/9.15.1"
+	BaseURL   = "https://cloudcode-pa.googleapis.com"
+	APIVer    = "v1internal"
+	DefaultUA = "google-api-nodejs-client/9.15.1"
 )
-
-// UserAgent is the HTTP User-Agent used for upstream requests.
-// It can be overridden at runtime (e.g., from config).
-var UserAgent = "google-api-nodejs-client/9.15.1"
 
 type CodeAssistRequest struct {
 	Model   string               `json:"model"`
@@ -38,18 +35,18 @@ type CodeAssistEnvelope struct {
 	Response *gemini.GeminiAPIResponse `json:"response"`
 }
 
-type Client struct {
+type CaClient struct {
 	httpClient *http.Client
 	baseURL    string
 	retries    int
 	baseDelay  time.Duration
 }
 
-func NewClient(httpClient *http.Client, retries int, baseDelay time.Duration) *Client {
-	return &Client{httpClient: httpClient, baseURL: BaseURL, retries: retries, baseDelay: baseDelay}
+func NewCaClient(httpClient *http.Client, retries int, baseDelay time.Duration) *CaClient {
+	return &CaClient{httpClient: httpClient, baseURL: BaseURL, retries: retries, baseDelay: baseDelay}
 }
 
-func (c *Client) GenerateContent(ctx context.Context, model, project string, req gemini.GeminiRequest) (*gemini.GeminiAPIResponse, error) {
+func (c *CaClient) GenerateContent(ctx context.Context, model, project string, req gemini.GeminiRequest) (*gemini.GeminiAPIResponse, error) {
 	url := fmt.Sprintf("%s/%s:generateContent", c.baseURL, APIVer)
 	logrus.Debugf("new request %s", url)
 	body := CodeAssistRequest{Model: model, Project: project, Request: req}
@@ -65,7 +62,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, project string, req
 			return err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("User-Agent", UserAgent)
+		httpReq.Header.Set("User-Agent", config.UserAgent)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -105,7 +102,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, project string, req
 }
 
 // StreamClient returns a channel of responses and an error channel.
-func (c *Client) GenerateContentStream(ctx context.Context, model, project string, req gemini.GeminiRequest) (<-chan gemini.GeminiAPIResponse, <-chan error) {
+func (c *CaClient) GenerateContentStream(ctx context.Context, model, project string, req gemini.GeminiRequest) (<-chan gemini.GeminiAPIResponse, <-chan error) {
 	out := make(chan gemini.GeminiAPIResponse, 16)
 	errs := make(chan error, 1)
 	go func() {
@@ -127,7 +124,7 @@ func (c *Client) GenerateContentStream(ctx context.Context, model, project strin
 			}
 			httpReq.Header.Set("Content-Type", "application/json")
 			httpReq.Header.Set("Accept", "text/event-stream")
-			httpReq.Header.Set("User-Agent", UserAgent)
+			httpReq.Header.Set("User-Agent", config.UserAgent)
 
 			resp, err := c.httpClient.Do(httpReq)
 			if err != nil {
@@ -273,7 +270,7 @@ func parseSSEStream(ctx context.Context, r io.Reader, cb func(*CodeAssistEnvelop
 //     and POST :onboardUser with {tierId, metadata:{pluginType:"GEMINI"}, cloudaicompanionProject:"default"}
 //   - poll :onboardUser with same body until {done:true}
 //   - return response.cloudaicompanionProject.id
-func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
+func (c *CaClient) DiscoverProjectID(ctx context.Context) (string, error) {
 	type allowedTier struct {
 		ID        string `json:"id"`
 		IsDefault bool   `json:"isDefault"`
@@ -287,7 +284,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 	var lr loadResp
 	if err := c.doJSON(ctx, "loadCodeAssist", map[string]any{
 		"metadata": map[string]any{"pluginType": "GEMINI"},
-	}, &lr, NodeJsUA); err != nil {
+	}, &lr, DefaultUA); err != nil {
 		return "", err
 	}
 	if len(lr.CloudAICompanionProject) > 0 && string(lr.CloudAICompanionProject) != "null" {
@@ -337,7 +334,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("discover project timeout")
 		}
 		var or onboardResp
-		if err := c.doJSON(ctx, "onboardUser", req, &or, NodeJsUA); err != nil {
+		if err := c.doJSON(ctx, "onboardUser", req, &or, DefaultUA); err != nil {
 			return "", err
 		}
 		if or.Done {
@@ -358,7 +355,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 }
 
 // doJSON posts JSON to ":<method>" and decodes the JSON response into out.
-func (c *Client) doJSON(ctx context.Context, method string, body any, out any, ua string) error {
+func (c *CaClient) doJSON(ctx context.Context, method string, body any, out any, ua string) error {
 	url := fmt.Sprintf("%s/%s:%s", c.baseURL, APIVer, method)
 	pb, err := json.Marshal(body)
 	if err != nil {
