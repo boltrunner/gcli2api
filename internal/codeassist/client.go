@@ -19,10 +19,14 @@ import (
 )
 
 const (
-	BaseURL   = "https://cloudcode-pa.googleapis.com"
-	APIVer    = "v1internal"
-	UserAgent = "aiclient2api-go/1.0"
+	BaseURL  = "https://cloudcode-pa.googleapis.com"
+	APIVer   = "v1internal"
+	NodeJsUA = "google-api-nodejs-client/9.15.1"
 )
+
+// UserAgent is the HTTP User-Agent used for upstream requests.
+// It can be overridden at runtime (e.g., from config).
+var UserAgent = "google-api-nodejs-client/9.15.1"
 
 type CodeAssistRequest struct {
 	Model   string               `json:"model"`
@@ -283,7 +287,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 	var lr loadResp
 	if err := c.doJSON(ctx, "loadCodeAssist", map[string]any{
 		"metadata": map[string]any{"pluginType": "GEMINI"},
-	}, &lr); err != nil {
+	}, &lr, NodeJsUA); err != nil {
 		return "", err
 	}
 	if len(lr.CloudAICompanionProject) > 0 && string(lr.CloudAICompanionProject) != "null" {
@@ -333,7 +337,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("discover project timeout")
 		}
 		var or onboardResp
-		if err := c.doJSON(ctx, "onboardUser", req, &or); err != nil {
+		if err := c.doJSON(ctx, "onboardUser", req, &or, NodeJsUA); err != nil {
 			return "", err
 		}
 		if or.Done {
@@ -354,7 +358,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 }
 
 // doJSON posts JSON to ":<method>" and decodes the JSON response into out.
-func (c *Client) doJSON(ctx context.Context, method string, body any, out any) error {
+func (c *Client) doJSON(ctx context.Context, method string, body any, out any, ua string) error {
 	url := fmt.Sprintf("%s/%s:%s", c.baseURL, APIVer, method)
 	pb, err := json.Marshal(body)
 	if err != nil {
@@ -368,7 +372,7 @@ func (c *Client) doJSON(ctx context.Context, method string, body any, out any) e
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("User-Agent", ua)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err

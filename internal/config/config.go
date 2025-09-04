@@ -18,6 +18,8 @@ type Config struct {
 	ServerPort           int      `json:"port"`
 	AuthKey              string   `json:"authKey"`
 	GeminiCredsFilePaths []string `json:"geminiOauthCredsFiles"`
+	// Optional user agent for upstream requests; if empty, a default is used.
+	UserAgent string `json:"userAgent"`
 	// ProjectIds maps a credential path to an ordered list of project IDs.
 	// Keys must match one of the entries in geminiOauthCredsFiles after ~ expansion.
 	// If a key exists with an empty list, it is treated as not configured and
@@ -90,6 +92,10 @@ func LoadConfig(path string) (Config, error) {
 			return cfg, fmt.Errorf("parse config: %w", err)
 		}
 		return cfg, fmt.Errorf("parse config: %w", err)
+	}
+	// Log user agent if provided
+	if strings.TrimSpace(cfg.UserAgent) != "" {
+		logrus.Infof("using user agent: %s", cfg.UserAgent)
 	}
 	// Defaults
 	if cfg.Host == "" {
