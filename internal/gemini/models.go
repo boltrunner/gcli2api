@@ -10,6 +10,7 @@ type ModelInfo struct {
 // SupportedModels is the canonical list of supported model identifiers.
 var SupportedModels = []ModelInfo{
 	{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash", Description: "Fast multimodal generation"},
+	{Name: "gemini-2.5-flash-lite", DisplayName: "Gemini 2.5 Flash Lite", Description: "Fast multimodal generation"},
 	{Name: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro", Description: "Accurate multimodal generation"},
 }
 

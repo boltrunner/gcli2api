@@ -110,9 +110,7 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.ServerPort == 0 {
 		cfg.ServerPort = 8085
 	}
-	if cfg.RequestMaxRetries == 0 {
-		cfg.RequestMaxRetries = 3
-	}
+	logrus.Infof("requestMaxRetries = %d", cfg.RequestMaxRetries)
 	if cfg.RequestBaseDelayMillis == 0 {
 		cfg.RequestBaseDelayMillis = 1000
 	}

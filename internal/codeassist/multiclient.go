@@ -254,20 +254,20 @@ func (mc *MultiClient) GenerateContentStream(ctx context.Context, model, project
 						upErrs = nil
 						continue
 					}
-					if err != nil {
-						if !sentAny && k < total-1 && isRetryable(err) {
-							logrus.Warnf("[MultiClient] rotating stream on early error idx=%d cred=%s err=%v", e.idx, credName, err)
-							// break inner loop to next attempt
-							lastErr = err
-							goto nextAttempt
-						}
-						// either after first event or not retryable/budget exhausted
-						// Deliver error first so consumer sees it before out closes
-						errs <- err
-						close(out)
-						close(errs)
-						return
+					logrus.Warnf("[MultiClient] upstream error channel idx=%d cred=%s err=%v", e.idx, credName, err)
+					if !sentAny && k < total-1 && isRetryable(err) {
+						logrus.Warnf("[MultiClient] rotating stream on early error idx=%d cred=%s err=%v", e.idx, credName, err)
+						// break inner loop to next attempt
+						lastErr = err
+						goto nextAttempt
 					}
+					// either after first event or not retryable/budget exhausted
+					// Deliver error first so consumer sees it before out closes
+					errs <- err
+					close(out)
+					close(errs)
+					return
+
 				case <-ctx.Done():
 					errs <- ctx.Err()
 					close(out)
@@ -342,6 +342,7 @@ func (mc *MultiClient) getOrDiscoverProjectID(ctx context.Context, e *entry) (st
 // It treats HTTP 401, 403, 429, and all 5xx as retryable, as well as
 // common transport timeouts. Context cancellations are not retried.
 func isRetryable(err error) bool {
+	logrus.Infof("isRetryable: examining error: %v", err)
 	if err == nil {
 		return false
 	}
